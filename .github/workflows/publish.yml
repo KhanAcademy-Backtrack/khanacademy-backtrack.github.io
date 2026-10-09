@@ -3,8 +3,15 @@ name: Publish Khanpanion
 on:
   push:
     branches: [main]
-    paths: ['site/**']
+    paths: ['.github/workflows/publish.yml']
+  schedule:
+    - cron: '2-59/5 * * * *'
   workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild even if the current application revision is already published
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -14,43 +21,146 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  check:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      source_sha: ${{ steps.revision.outputs.source_sha }}
+      changed: ${{ steps.revision.outputs.changed }}
     steps:
-      - name: Check out the tested static release
+      - name: Read the last successful deployment
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: main
           persist-credentials: false
-      - name: Check the release receipt
+      - name: Compare application main with the deployed revision
+        id: revision
+        env:
+          FORCE: ${{ inputs.force || false }}
         run: |
-          python3 - <<'RECEIPT'
-          import json, re
+          python3 - <<'CHECK'
+          import json, os, re, subprocess
           from pathlib import Path
-          assert Path('site/index.html').is_file(), 'Missing homepage'
-          assert Path('site/.nojekyll').is_file(), 'Missing static-site marker'
-          receipt = json.loads(Path('site/release.json').read_text())
-          assert receipt['repository'] == 'KhanAcademy-Backtrack/KhanAcademy-Backtrack-Demo'
-          assert re.fullmatch(r'[0-9a-f]{40}', receipt['commit'])
-          print('Publishing application revision ' + receipt['commit'])
+          line = subprocess.check_output(['git', 'ls-remote', 'https://github.com/KhanAcademy-Backtrack/KhanAcademy-Backtrack-Demo.git', 'refs/heads/main'], text=True)
+          sha = line.split()[0]
+          assert re.fullmatch(r'[0-9a-f]{40}', sha), 'Invalid source revision'
+          receipt = Path('deployment.json')
+          previous = json.loads(receipt.read_text()) if receipt.exists() else {}
+          changed = os.environ['FORCE'] == 'true' or previous.get('repository') != 'KhanAcademy-Backtrack/KhanAcademy-Backtrack-Demo' or previous.get('commit') != sha
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'source_sha={sha}\nchanged={str(changed).lower()}\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write(f'Application main: `{sha}`. ' + ('Building this revision.' if changed else 'Already published; no rebuild or deployment needed.') + '\n')
+          CHECK
+
+  build:
+    needs: check
+    if: needs.check.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the exact application revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: KhanAcademy-Backtrack/KhanAcademy-Backtrack-Demo
+          ref: ${{ needs.check.outputs.source_sha }}
+          persist-credentials: false
+      - name: Use Node.js 24
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: 1
+      - name: Record the application revision
+        env:
+          SOURCE_SHA: ${{ needs.check.outputs.source_sha }}
+        run: |
+          touch out/.nojekyll
+          node --input-type=module <<'RECEIPT'
+          import {writeFileSync} from 'node:fs';
+          writeFileSync('out/release.json', JSON.stringify({repository: 'KhanAcademy-Backtrack/KhanAcademy-Backtrack-Demo', commit: process.env.SOURCE_SHA}) + '\n');
           RECEIPT
-      - name: Upload the static site
+      - name: Upload the tested static site
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
-          path: site
+          path: out
 
   deploy:
-    needs: build
+    needs: [check, build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       pages: write
       id-token: write
+    outputs:
+      published: ${{ steps.deployment.outcome == 'success' }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Skip a build superseded by newer application changes
+        id: current
+        env:
+          SOURCE_SHA: ${{ needs.check.outputs.source_sha }}
+        run: |
+          latest=$(git ls-remote https://github.com/KhanAcademy-Backtrack/KhanAcademy-Backtrack-Demo.git refs/heads/main | cut -f1)
+          if [[ "$latest" == "$SOURCE_SHA" ]]; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo 'Application main changed during the build. The next check will build the newer revision.' >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Publish the site
         id: deployment
+        if: steps.current.outputs.ready == 'true'
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+
+  record:
+    needs: [check, deploy]
+    if: needs.deploy.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Verify the public release and save its receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.check.outputs.source_sha }}
+        run: |
+          python3 - <<'RECORD'
+          import base64, json, os, subprocess, time, urllib.request
+          sha = os.environ['SOURCE_SHA']
+          expected = {'repository': 'KhanAcademy-Backtrack/KhanAcademy-Backtrack-Demo', 'commit': sha}
+          url = 'https://khanacademy-backtrack.github.io/release.json?revision=' + sha
+          for attempt in range(18):
+              try:
+                  with urllib.request.urlopen(url, timeout=10) as response:
+                      if json.load(response) == expected:
+                          break
+              except (OSError, ValueError):
+                  pass
+              if attempt == 17:
+                  raise RuntimeError('Public release receipt did not match the tested commit')
+              time.sleep(5)
+          endpoint = 'repos/' + os.environ['GITHUB_REPOSITORY'] + '/contents/deployment.json'
+          current = subprocess.run(['gh', 'api', endpoint + '?ref=main'], text=True, capture_output=True)
+          if current.returncode and '404' not in current.stderr:
+              raise RuntimeError(current.stderr)
+          payload = {'message': 'Record deployed application ' + sha, 'branch': 'main', 'content': base64.b64encode((json.dumps(expected, indent=2) + '\n').encode()).decode()}
+          if not current.returncode:
+              record = json.loads(current.stdout)
+              if json.loads(base64.b64decode(record['content'])) == expected:
+                  print('Deployment receipt is already current.')
+                  raise SystemExit(0)
+              payload['sha'] = record['sha']
+          subprocess.run(['gh', 'api', endpoint, '--method', 'PUT', '--input', '-'], input=json.dumps(payload), text=True, check=True, stdout=subprocess.DEVNULL)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write(f'Verified https://khanacademy-backtrack.github.io/ at application `{sha}`.\n')
+          RECORD

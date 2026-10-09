@@ -2,20 +2,41 @@
 
 Public address: https://khanacademy-backtrack.github.io/
 
-This repository publishes the existing Khanpanion application on GitHub Pages. The application source remains in [KhanAcademy-Backtrack-Demo](https://github.com/KhanAcademy-Backtrack/KhanAcademy-Backtrack-Demo).
+The application source remains in [KhanAcademy-Backtrack-Demo](https://github.com/KhanAcademy-Backtrack/KhanAcademy-Backtrack-Demo).
 
-Every push to the application repository's `main` runs its **Publish GitHub Pages** workflow: install pinned dependencies, test, typecheck and build. After those checks pass, an isolated publication job copies only the generated static export into this repository's `site/` directory. This repository's **Publish Khanpanion** workflow then deploys `site/` to the existing public address.
+## Automatic publication
 
-## Automatic releases and recovery
+**Publish Khanpanion** checks the application's `main` branch every five minutes.
+For a new commit it runs the application tests, type check and production build,
+then publishes the generated `out/` directory. Unchanged commits skip rebuilding.
+The public `/release.json` records the exact tested application commit.
+`deployment.json` here is updated only after that public receipt is verified.
 
-Push or merge reviewed changes to `main` in the application repository. No separate manual publication is needed. Do not edit generated files under `site/` here. Both hosts follow application `main`, with independent deployment times.
+The schedule is automatic, but GitHub can delay runs; this is not an immediate
+cross-repository push trigger. Both hosts follow application main independently.
+A failed test or build keeps the last successful Pages release online. Newer main
+changes supersede an older build before deployment, and runs are serialized.
 
-To retry a failed build/publication, use **Actions → Publish GitHub Pages → Run workflow** on `main` in the application repository. To retry only final Pages deployment of the tested files, use **Actions → Publish Khanpanion → Run workflow** here. To roll back source, revert the change on application `main`; the normal checks run again. A failed test or build leaves the last successful site online.
+## Retry or rollback
 
-Actions are pinned to commit hashes. The application's `github-pages-publishing` environment permits only `main` and stores `PAGES_DEPLOY_KEY`. Its public key has write access only to this publishing repository; build jobs do not receive it. The standard `GITHUB_TOKEN` alone cannot push into this separate repository or trigger the downstream workflow. No paid service or personal access token is used.
+Use **Actions → Publish Khanpanion → Run workflow** to check main immediately.
+Leave **force** off to skip an already-published revision; enable it to rebuild
+that same revision. For a rollback, revert the application commit on main and
+let the next check publish the tested result.
 
-The deployed `/release.json` records the application commit. Confirm both workflows succeed and that this receipt matches the intended revision. Access still depends on the venue's DNS and filtering; automatic deployment does not fix a blocked hostname.
+GitHub may disable scheduled workflows after 60 days without repository activity.
+Successful releases commit the deployment receipt, keeping an actively updated
+repository active. After a long idle period, re-enable the workflow in Actions if
+needed. The last deployed site remains available while a schedule is disabled.
 
-## Learner data
+No personal access token, SSH deployment key, paid service or additional account is
+required. This repository disallows deploy keys. Only GitHub's short-lived workflow
+tokens are used, with write access confined to deployment and receipt jobs; the
+application build has read-only permissions. External Actions are pinned to commits.
 
-Progress is stored locally for each website address. Existing progress on `khanpanion.vercel.app` does not automatically appear on this address. Khan videos and other external resources still depend on the venue allowing those services.
+## Learner data and access
+
+Progress is stored locally for each website address. Existing progress on
+`khanpanion.vercel.app` does not automatically appear on this address. Khan videos
+and other resources depend on the venue allowing those services. Automatic
+publication does not fix a blocked hostname or change the existing slide QR.
