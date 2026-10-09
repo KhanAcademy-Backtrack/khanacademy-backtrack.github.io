@@ -1,16 +1,20 @@
-# Khanpanion competition site
+# Khanpanion GitHub Pages delivery
 
 Public address: https://khanacademy-backtrack.github.io/
 
-This repository publishes the existing Khanpanion application on GitHub Pages for the school competition. The application source remains in [KhanAcademy-Backtrack-Demo](https://github.com/KhanAcademy-Backtrack/KhanAcademy-Backtrack-Demo).
+This repository publishes the existing Khanpanion application on GitHub Pages. The application source remains in [KhanAcademy-Backtrack-Demo](https://github.com/KhanAcademy-Backtrack/KhanAcademy-Backtrack-Demo).
 
-The initial release uses source commit `fc9b3d93f0accb80793415bf8d19b0e806a93f8a`, including the Courses, CET Reviewers, Practice Exams and Daily Recall home shortcuts. The workflow runs the source tests and production build, then publishes only its `out` directory. GitHub Actions are pinned to commit hashes. No paid domain, additional account or deployment secret is required.
+Every push to the application repository's `main` runs its **Publish GitHub Pages** workflow: install pinned dependencies, test, typecheck and build. After those checks pass, an isolated publication job copies only the generated static export into this repository's `site/` directory. This repository's **Publish Khanpanion** workflow then deploys `site/` to the existing public address.
 
-## Publish another reviewed release
+## Automatic releases and recovery
 
-Open **Actions → Publish Khanpanion → Run workflow** and provide the full reviewed source commit SHA. Leaving the input blank republishes the pinned competition release. The original Vercel site continues to follow the application repository's `main` branch independently.
+Push or merge reviewed changes to `main` in the application repository. No separate manual publication is needed. Do not edit generated files under `site/` here. Both hosts follow application `main`, with independent deployment times.
 
-The deployed `/release.json` records the application commit. Check the Actions deployment result and test the public link on the venue's Wi-Fi before distributing a new release.
+To retry a failed build/publication, use **Actions → Publish GitHub Pages → Run workflow** on `main` in the application repository. To retry only final Pages deployment of the tested files, use **Actions → Publish Khanpanion → Run workflow** here. To roll back source, revert the change on application `main`; the normal checks run again. A failed test or build leaves the last successful site online.
+
+Actions are pinned to commit hashes. The application's `github-pages-publishing` environment permits only `main` and stores `PAGES_DEPLOY_KEY`. Its public key has write access only to this publishing repository; build jobs do not receive it. The standard `GITHUB_TOKEN` alone cannot push into this separate repository or trigger the downstream workflow. No paid service or personal access token is used.
+
+The deployed `/release.json` records the application commit. Confirm both workflows succeed and that this receipt matches the intended revision. Access still depends on the venue's DNS and filtering; automatic deployment does not fix a blocked hostname.
 
 ## Learner data
 
